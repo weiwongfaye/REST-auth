@@ -2,10 +2,12 @@
 import os
 from flask import Flask, abort, request, jsonify, g, url_for
 from flask_sqlalchemy import SQLAlchemy
-from flask_httpauth import HTTPBasicAuth
+from flask_httpauth import HTTPBasicAuth, HTTPTokenAuth, MultiAuth
 from passlib.apps import custom_app_context as pwd_context
 from itsdangerous import (TimedJSONWebSignatureSerializer
                           as Serializer, BadSignature, SignatureExpired)
+
+# from flask.ext.ldap import LDAP
 
 # initialization
 app = Flask(__name__)
@@ -13,10 +15,20 @@ app.config['SECRET_KEY'] = 'the quick brown fox jumps over the lazy dog'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///db.sqlite'
 app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
 
+# app.config['LDAP_HOST'] = 'ldap.example.com'
+# app.config['LDAP_DOMAIN'] = 'example.com'
+# app.config['LDAP_AUTH_TEMPLATE'] = 'login.html'
+# app.config['LDAP_PROFILE_KEY'] = 'employeeID'
+
+
+
+
 # extensions
 db = SQLAlchemy(app)
 auth = HTTPBasicAuth()
-
+token_auth = HTTPTokenAuth(scheme='Bearer')
+multi_auth = MultiAuth(auth, token_auth)
+# ldap = LDAP(app)
 
 class User(db.Model):
     __tablename__ = 'users'
@@ -34,28 +46,27 @@ class User(db.Model):
         s = Serializer(app.config['SECRET_KEY'], expires_in=expiration)
         return s.dumps({'id': self.id})
 
-    @staticmethod
-    def verify_auth_token(token):
-        s = Serializer(app.config['SECRET_KEY'])
-        try:
-            data = s.loads(token)
-        except SignatureExpired:
-            return None    # valid token, but expired
-        except BadSignature:
-            return None    # invalid token
-        user = User.query.get(data['id'])
-        return user
+
+@token_auth.verify_token
+def verify_token(token):
+    s = Serializer(app.config['SECRET_KEY'])
+    try:
+        data = s.loads(token)
+    except SignatureExpired:
+        return None    # valid token, but expired
+    except BadSignature:
+        return None    # invalid token
+    user = User.query.get(data['id'])
+    g.user = user
+    return user
 
 
 @auth.verify_password
 def verify_password(username_or_token, password):
-    # first try to authenticate by token
-    user = User.verify_auth_token(username_or_token)
-    if not user:
-        # try to authenticate with username/password
-        user = User.query.filter_by(username=username_or_token).first()
-        if not user or not user.verify_password(password):
-            return False
+
+    user = User.query.filter_by(username=username_or_token).first()
+    if not user or not user.verify_password(password):
+        return False
     g.user = user
     return True
 
@@ -92,9 +103,9 @@ def get_auth_token():
 
 
 @app.route('/api/resource')
-@auth.login_required
+@multi_auth.login_required
 def get_resource():
-    return jsonify({'data': 'Hello, %s!' % g.user.username})
+    return jsonify({'data': 'Hello %s' %(g.user.username)})
 
 
 if __name__ == '__main__':
